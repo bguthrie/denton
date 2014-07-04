@@ -1,16 +1,27 @@
 # denton
 
-Denton is simple persistence middleware for Clojure. It supplies a basic protocol and then encourages you to
-structure related concerns like logging, SQL parsing, object mapping, and lifecycle events as a series of wrappers
-applied to the same core data structure, much like Ring does for HTTP requests.
+Denton is simple persistence middleware for Clojure. It supplies a basic protocol, `Persistable`, and structures
+related concerns like logging, SQL parsing, object mapping, and lifecycle events as a series of wrappers applied
+to a core implementation of that protocol, much like Ring does with HTTP requests.
 
 Denton is designed to be lightweight but has strong opinions about logging (essential), raw SQL (avoid), and macros
 with side effects (avoid at all costs). It does not provide any infrastructure for managing "models", but does include
 several helpful faculties that `clojure.jdbc` leaves out.
 
+The base `Persistable` protocol defines six functions:
+
+* `update-all`: Given a query and a map of values, updates the record and returns the updated values.
+* `insert`: Given a map of values, inserts the record and returns the updated values.
+* `delete`: Given a query, deletes all records that match it and returns the number affected.
+* `find-one`: Given a query, returns the first record matching it.
+* `find-all`: Given a query, returns all records matching it.
+* `count-all` Given a query, returns the count of records matching it.
+
+In addition, Denton defines several other user-friendly helper functions, like `save`, that act on reified persistables.
+
 ## Usage
 
-```
+```clojure
 (require '[denton.core :refer :all])
 
 (def users
