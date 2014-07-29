@@ -9,6 +9,7 @@
     [org.clojure/clojure "1.5.1"]
     [honeysql "0.4.3"]
     [org.clojure/java.jdbc "0.3.3"]
+    [savagematt/bowen "1.0"]
     ]
   :profiles {
     :dev {

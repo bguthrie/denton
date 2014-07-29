@@ -2,7 +2,8 @@
   (:import  [clojure.lang PersistentArrayMap])
   (:require [clojure.java.jdbc :as sql]
             [clojure.string :as str]
-            [honeysql.core :as honey]))
+            [honeysql.core :as honey]
+            [bowen.core :refer :all]))
 
 (defprotocol Persistable
   (update-all [this query values]
@@ -84,90 +85,79 @@
 
 ;; Concrete database-backed implementations and wrappers.
 
-(defrecord SerializePersistable [wrapped ->db <-db]
-  Persistable
-  (update-all [this query values]
-    (when-let [result (update-all wrapped query (->db values))] (<-db result)))
-  (insert [this values]
-    (<-db (first (wrap-vec (insert wrapped (->db values))))))
-  (delete [this query]
-    (delete wrapped query))
-  (find-one [this query]
-    (when-let [result (find-one wrapped query)] (<-db result)))
-  (find-all [this query]
-    (map <-db (find-all wrapped query)))
-  (count-all [this query]
-    (count-all wrapped query)))
+(defn sql-db [conn-fn]
+  (reify
+    Persistable
+    (update-all [this query values]
+      (sql/db-do-prepared-return-keys (conn-fn) query values))
+    (insert [this values]
+      (sql/db-do-prepared-return-keys (conn-fn) (first values) (rest values)))
+    (delete [this query]
+      (sql/execute! (conn-fn) query))
+    (find-one [this query]
+      (first (sql/query (conn-fn) query)))
+    (find-all [this query]
+      (sql/query (conn-fn) query))
+    (count-all [this query]
+      (:count (first (sql/query (conn-fn) query))))))
 
-(defrecord HoneySqlParsePersistable [wrapped table-name]
-  Persistable
-  (update-all [this query values]
-    (let [sql-vec (honey/format (merge-query {:update table-name :set values} query))]
-      (update-all wrapped (first sql-vec) (rest sql-vec))))
-  (insert [this values]
-    (insert wrapped (honey/format {:insert-into table-name :values (wrap-vec values)})))
-  (delete [this query]
-    (delete wrapped (honey/format (merge-query {:delete-from table-name} query))))
-  (find-one [this query]
-    (find-one wrapped (honey/format (merge-query {:select [:*] :from [table-name] :limit 1} query))))
-  (find-all [this query]
-    (find-all wrapped (honey/format (merge-query {:select [:*] :from [table-name]} query))))
-  (count-all [this query]
-    (count-all wrapped (honey/format (merge-query {:select [:%count.*] :from [table-name]} query)))))
+(defn wrap-with-serialize [wrapped ->db <-db]
+  (decorate wrapped
+    Persistable
+    (update-all [this query values]
+      (when-let [result (update-all wrapped query (->db values))] (<-db result)))
+    (insert [this values]
+      (<-db (first (wrap-vec (insert wrapped (->db values))))))
+    (find-one [this query]
+      (when-let [result (find-one wrapped query)] (<-db result)))
+    (find-all [this query]
+      (map <-db (find-all wrapped query)))))
 
-(defrecord LogSqlPersistable [wrapped logger-fn table-name]
-  Persistable
-  (update-all [this query values]
-    (sql-time-log logger-fn table-name :update [query values] #(update-all wrapped query values)))
-  (insert [this values]
-    (sql-time-log logger-fn table-name :insert values #(insert wrapped values)))
-  (delete [this query]
-    (sql-time-log logger-fn table-name :delete query #(delete wrapped query)))
-  (find-one [this query]
-    (sql-time-log logger-fn table-name :find-one query #(find-one wrapped query)))
-  (find-all [this query]
-    (sql-time-log logger-fn table-name :find-all query #(find-all wrapped query)))
-  (count-all [this query]
-    (sql-time-log logger-fn table-name :count-all query #(count-all wrapped query))))
+(defn wrap-with-honey [wrapped table-name]
+  (decorate wrapped
+    Persistable
+    (update-all [this query values]
+      (let [sql-vec (honey/format (merge-query {:update table-name :set values} query))]
+        (update-all wrapped (first sql-vec) (rest sql-vec))))
+    (insert [this values]
+      (insert wrapped (honey/format {:insert-into table-name :values (wrap-vec values)})))
+    (delete [this query]
+      (delete wrapped (honey/format (merge-query {:delete-from table-name} query))))
+    (find-one [this query]
+      (find-one wrapped (honey/format (merge-query {:select [:*] :from [table-name] :limit 1} query))))
+    (find-all [this query]
+      (find-all wrapped (honey/format (merge-query {:select [:*] :from [table-name]} query))))
+    (count-all [this query]
+      (count-all wrapped (honey/format (merge-query {:select [:%count.*] :from [table-name]} query))))))
 
-(defrecord DbPersistable [conn-fn]
-  Persistable
-  (update-all [this query values]
-    (sql/db-do-prepared-return-keys (conn-fn) query values))
-  (insert [this values]
-    (sql/db-do-prepared-return-keys (conn-fn) (first values) (rest values)))
-  (delete [this query]
-    (sql/execute! (conn-fn) query))
-  (find-one [this query]
-    (first (sql/query (conn-fn) query)))
-  (find-all [this query]
-    (sql/query (conn-fn) query))
-  (count-all [this query]
-    (:count (first (sql/query (conn-fn) query)))))
+(defn wrap-with-logging [wrapped logger-fn table-name]
+  (decorate wrapped
+    Persistable
+    (update-all [this query values]
+      (sql-time-log logger-fn table-name :update [query values] #(update-all wrapped query values)))
+    (insert [this values]
+      (sql-time-log logger-fn table-name :insert values #(insert wrapped values)))
+    (delete [this query]
+      (sql-time-log logger-fn table-name :delete query #(delete wrapped query)))
+    (find-one [this query]
+      (sql-time-log logger-fn table-name :find-one query #(find-one wrapped query)))
+    (find-all [this query]
+      (sql-time-log logger-fn table-name :find-all query #(find-all wrapped query)))
+    (count-all [this query]
+      (sql-time-log logger-fn table-name :count-all query #(count-all wrapped query)))))
 
-(defrecord LifecyclePersistable [wrapped lifecycle-spec]
-  Persistable
-  (update-all [this query values]
-    (let [ret (update-all wrapped query values)]
-      (when-let [after-update (:after-update lifecycle-spec)] (when ret (after-update ret)))
-      ret))
-  (insert [this values]
-    (let [ret (insert wrapped values)]
-      (when-let [after-insert (:after-insert lifecycle-spec)] (after-insert ret))
-      ret))
-  (delete [this query]
-    (let [ret (delete wrapped query)]
-      (when-let [after-delete (:after-delete lifecycle-spec)] (after-delete ret))
-      ret))
-  (find-one [this query]
-    (find-one wrapped query))
-  (find-all [this query]
-    (find-all wrapped query))
-  (count-all [this query]
-    (count-all wrapped query)))
-
-(def wrap-with-serialize ->SerializePersistable)
-(def wrap-with-honey     ->HoneySqlParsePersistable)
-(def wrap-with-logging   ->LogSqlPersistable)
-(def wrap-with-lifecycle ->LifecyclePersistable)
-(def sql-db              ->DbPersistable)
+(defn wrap-with-lifecycle [wrapped {:keys [after-update after-insert after-delete]}]
+  (decorate wrapped
+    Persistable
+    (update-all [this query values]
+      (let [ret (update-all wrapped query values)]
+        (when (and after-update ret) (after-update ret))
+        ret))
+    (insert [this values]
+      (let [ret (insert wrapped values)]
+        (when (and after-insert ret) (after-insert ret))
+        ret))
+    (delete [this query]
+      (let [ret (delete wrapped query)]
+        (when (and after-delete ret) (after-delete ret))
+        ret))))
