@@ -16,6 +16,7 @@
       :dependencies [
         [midje "1.6.2"]
         [org.apache.derby/derby "10.10.2.0"]
+        [com.h2database/h2 "1.4.180"]
       ]
       :plugins [
         [lein-midje "3.1.3"]

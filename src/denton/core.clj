@@ -161,3 +161,10 @@
       (let [ret (delete wrapped query)]
         (when (and after-delete ret) (after-delete ret))
         ret))))
+
+(defn wrap-with-dynamic-load [honey-wrapped & id-col]
+  (decorate honey-wrapped
+    Persistable
+    (insert [this values]
+      (when-let [generated-id (->> values (insert honey-wrapped) (vals) (first))]
+        (find-one honey-wrapped [:= :id generated-id])))))
